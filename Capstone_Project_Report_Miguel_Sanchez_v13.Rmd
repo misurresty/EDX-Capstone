@@ -1,0 +1,732 @@
+---
+title: "Capstone_Project_Report_Miguel_Sanchez"
+author: "Miguel Sanchez"
+date: "29-09-2020"
+output: 
+  pdf_document: default 
+  html_document: default
+  
+---
+
+```{r setup, include=FALSE}
+if(!require(caret)) install.packages("caret", repos = "http://cran.us.r-project.org")
+if(!require(sqldf)) install.packages("sqldf", repos = "http://cran.us.r-project.org")
+if(!require(mlbench)) install.packages("mlbench", repos = "http://cran.us.r-project.org")
+if(!require(rsample)) install.packages("rsample", repos = "http://cran.us.r-project.org")
+if(!require(e1071)) install.packages("e1071", repos = "http://cran.us.r-project.org")
+if(!require(dplyr)) install.packages("dplyr", repos = "http://cran.us.r-project.org")
+if(!require(randomForest)) install.packages("randomForest", repos = "http://cran.us.r-project.org")
+
+
+library(sqldf)
+library(caret)
+library(randomForest)
+library(mlbench)
+library(rsample)
+library(e1071)
+library(reshape2)
+library(ggplot2)
+library(dplyr)
+
+githubURL <- "https://github.com/misurresty/EDX-Capstone/blob/master/sampledata-edx-finalcapstonev2.RData?raw=true"
+load(url(githubURL))
+
+
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+## INTRODUCTION
+
+Machine Learning is a subset of Data Science and it´s becoming a strategic piece of digital transformation processes.
+
+Predictive algorithms provide additional insights to make better decisions and will enable proactive actions on a particular business pain point.
+
+The current initiative is intended for the final EDX-Capstone, implementing a Machine Learning platform for fraud detection.
+
+This report is assembled with four sections: 
+
+The CONTEXT section provideS the business pain point, goal and objetives for the predictive platform and also will detail the data set used for training, test and validation purposes.
+
+The METHOD /ANALYSIS section provides the data transformation and cleaning techniques as well as data balance methods.The METHOD will also cover the different Machine Learning algorithms used in the platform.
+
+The RESULTS section provides the output on each tested algorithm and also provide details on the execution of the selected algorithm against the validation data set.
+
+The CONCLUSION section provides recommendations, lessons learned and next steps related with the platform.
+
+## 1) CONTEXT
+
+Fraud and Risk are relevant topics for Banks and financial institutions; most of the current initiatives for fraud/risk mitigation have a reactive approach, triggering cutomer disappointment, frustation and having a direct impact on KPIS´s related with NPS (Customer Net Promote Score), CXI (Customer Experience Index) and overall customer satisfaction.
+
+
+Machine learning models to detect and prevent risky (an eventually fraudulent) transactions in predictive way, can provide the Banks a proactive approach, having the opportunity to react in advance, taking the proper mitigation actions. 
+
+
+## 1.1) THE PROBLEM
+
+The Bank XX has deployed a web application, offering an inter-bank money tranfer service. Several complaints are being received from customers, stating a fraud (identity thief) was committed as they didn´t execute a money transfer transaction.
+
+## 1.2) THE APPROACH 
+
+To create and deploy a machine learning platform that is able to proactively detect suspicious transactions; the transaction should be flagged (moved to "stand by" state and not executed) so the call center can contact the customer and validate for the intended transaction.
+
+## 1.3) THE DATA
+
+I have implemented a system to detect risky transactions, using synthetic data for train and validate the model.
+
+Base Data Set: 6.681.203 Records
+
+Base Data Set: 117 variables
+ 
+Data set has been created using synthetic methods. Real/Transactional data used as a seed, coming from a Banking legacy/core platform.
+
+Most or the variables are categorical as data is coming from a tranasactional system, only a few of them are continuous (i.e. balance, deposit)
+
+
+CLASS variable used for training and prediction
+ --> 0 for regular txn´s
+ --> 1 for suspicious txn´s that could lead on a FRAUD 
+
+Values for the CLASS variable were assigned based on real occurrences of suspicious vs not suspicious transactions, using a Data Engineering process.
+
+Additional variables with the prediction will be created over the test data set, depending on the 
+used algorithm.
+
+```{r initial_exploration, echo=TRUE}
+
+nrow(base)
+str(base, list.len=ncol(base))
+head(base)
+
+```
+## 1.3.1) FEATURE SELECTION & DATA WRANGLING
+
+Initial analysis will be performed over the original data set to determine relevant variables (not all the variables should be used). Machine Learning algorithms perform better if highly correlated attributes are removed.
+
+DATA WRANGLING - deleting LOG´s and SIMDEFAULT variables as those are systemic.Setting TARGET variable to CLASS and deleting TARGET
+
+```{r initial_exploration0, echo=TRUE}
+base$SIMDEFAULT <- NULL
+base$LOG <- NULL
+
+base$class <- base$target
+base$target <- NULL
+
+```
+## 1.3.1.1) VARIABLE REDUNDANCY - METHOD 1
+
+The Caret R package provides the findCorrelation which will analyze a correlation matrix of my data’s attributes report on attributes that can be removed.
+I want to remove attributes with an absolute correlation of (ideally >0.75).
+
+```{r redundancy0, echo=TRUE}
+set.seed(7)
+```
+Using a sample dataset to determine variable redundancy;only 1.000.000 records will be processed because of memory limitations
+```{r redundancy1, echo=TRUE}
+basep <- base[sample(1:6340852,1000000),4:107] 
+basep[] <- lapply (basep, function (x) as.numeric (as.character (x)))
+correlationMatrix <- cor(basep)
+```
+Summarize the correlation matrix
+```{r redundancy2, echo=TRUE}
+options(max.print=1000)
+print(correlationMatrix)
+```
+Find attributes that are highly correlated
+```{r redundancy3, echo=TRUE}
+highlyCorrelated <- findCorrelation(correlationMatrix, cutoff=0.75)
+```
+Print indexes of highly correlated attributes
+```{r redundancy4, echo=TRUE}
+print(highlyCorrelated)
+```
+Variables that will be left out due to its high correlation
+```{r redundancy5, echo=TRUE}
+summary(basep[,highlyCorrelated])
+
+rm(basep)
+```
+## 1.3.1.2) VARIABLE REDUNDANCY - METHOD 2
+
+Building a Learning Vector Quantization (LVQ) model. The varImp is then used to estimate the variable importance, which is printed and plotted.
+
+Sample Dataset
+```{r redundancy6, echo=TRUE}
+set.seed(7)
+basep <- base[sample(1:6340852,1000),-112]
+positivos <- base[base$class == 1,-112]
+basep <- rbind(positivos,basep)
+```
+Excluding the class variable
+```{r redundancy7, echo=TRUE}
+basepclass <- basep$class
+basep$class <- NULL
+```
+Converting the variables to numeric
+```{r redundancy8, echo=TRUE}
+basep[] <- lapply (basep, function (x) as.numeric (as.character (x)))
+```
+Adding the class variable
+```{r redundancy9, echo=TRUE}
+basepclass -> basep$class
+```
+Factorizing the class variable 
+```{r redundancy10, echo=TRUE}
+basep$class <- as.factor(basep$class)
+```
+Wrangling for NA´s
+```{r redundancy11, echo=TRUE}
+basep <- na.omit(basep)
+```
+Several variables with zero variances will be removed from the Dataset
+```{r redundancy12, echo=TRUE}
+basep$MODFOINT <-NULL
+basep$CPP <- NULL
+basep$CHECK <-NULL
+basep$MODEMAILOTR <- NULL
+basep$EFECTI <- NULL
+basep$MODDIRCOM <- NULL
+basep$MODDIROTR <- NULL
+basep$MODFONCOM <- NULL
+basep$MODFONINT <- NULL
+basep$RESCLASEGD <- NULL
+basep$MAILPAGPENS <- NULL
+basep$CLADINCONF <-  NULL
+basep$CLADINMOD1 <- NULL
+basep$CLADINMOD2 <-  NULL
+basep$WVPA <- NULL
+basep$SOLRETCCV <- NULL
+```
+Prepare the training scheme
+```{r redundancy13, echo=TRUE}
+control <- trainControl(method="repeatedcv", number=10, repeats=3)
+```
+Train the model
+```{r redundancy14, echo=TRUE}
+model <- train(class~., data=basep, method="lvq", preProcess="scale", trControl=control)
+```
+Estimate variable importance
+```{r redundancy15, echo=TRUE}
+importance <- varImp(model, scale=FALSE)
+```
+Summarize importance
+```{r redundancy16, echo=TRUE}
+print(importance, top = 50)
+```
+Plot importance
+```{r redundancy17, echo=TRUE}
+plot(importance, top = 50)
+```
+
+There is a manual check as there are variables with high correlation but due to business requirements, those need to be included in the data set.
+
+Based on the results on both variable redundace methods and business requirements, a new data set will be created.
+```{r redundancy18, echo=TRUE}
+rm(basep)
+```
+New Data Set with relevant variables, based on variable redundace methods applied
+```{r redundancy19, echo=TRUE}
+base <- base[,c('ACANXCLADIN',
+                'APVP2',
+                'APVP3',
+                'AVCETRAM',
+                'CAND2',
+                'CAVP2AUT',
+                'CDMODCEL',
+                'CDREVDESENR',
+                'CLADINCONF',
+                'CLADINDESENR',
+                'CLADINMOD1',
+                'CLADINMOD2',
+                'CLADINP1',
+                'CLADINREV1',
+                'CLADINREV2',
+                'CONSCLASEG',
+                'CONSTRAM',
+                'CONSVINLAB',
+                'DEPOSIT',
+                'CUSTOMER_AGE',
+                'EMAILMODDAT',
+                'ENTCLASEGAD',
+                'GENCLAVDIN',
+                'IPRODSAL',
+                'MANDATE',
+                'MCLAACCFOR',
+                'MCLASATFOR',
+                'MODANTCLI',
+                'MODEMAILCOM',
+                'OPECLADIN',
+                'qxtotp',
+                'RECACCWEB',
+                'RECUPCLACCE',
+                'REPAVTRAM',
+                'BALANCE',
+                'CUST_PROFIT_SCORE',
+                'CUST_SERVICE_SCORE',
+                'SECLSEG',
+                'SMSMODCEL1',
+                'SMSMODCEL2',
+                'REQVP',
+                'REQVPA',
+                'WVP',
+                'TOTPEMAIL',
+                'dominio',
+                'class')]
+```
+Delete records without selected transactions
+```{r redundancy20, echo=TRUE}
+base$borrar <- ifelse(
+  base$ACANXCLADIN == 0 &
+    base$APVP2 == 0 &
+    base$APVP3 == 0 &
+    base$AVCETRAM == 0 &
+    base$CAND2 == 0 &
+    base$CAVP2AUT == 0 &
+    base$CDMODCEL == 0 &
+    base$CDREVDESENR == 0 &
+    base$CLADINCONF == 0 &
+    base$CLADINDESENR == 0 &
+    base$CLADINMOD1 == 0 &
+    base$CLADINMOD2 == 0 &
+    base$CLADINP1 == 0 &
+    base$CLADINREV1 == 0 &
+    base$CLADINREV2 == 0 &
+    base$CONSCLASEG == 0 &
+    base$CONSTRAM == 0 &
+    base$CONSVINLAB == 0 &
+    base$DEPOSIT == 0 &
+    #base$edad_cliente == 0 &
+    base$EMAILMODDAT == 0 &
+    base$ENTCLASEGAD == 0 &
+    base$GENCLAVDIN == 0 &
+    base$IPRODSAL == 0 &
+    base$MANDATE == 0 &
+    base$MCLAACCFOR == 0 &
+    base$MCLASATFOR == 0 &
+    base$MODANTCLI == 0 &
+    base$MODEMAILCOM == 0 &
+    base$OPECLADIN == 0 &
+    #base$qxtotp == 0 &
+    base$RECACCWEB == 0 &
+    base$RECUPCLACCE == 0 &
+    base$REPAVTRAM == 0 &
+    base$BALANCE == 0 &
+    #base$score_rentabilidad == 0 &
+    #base$score_servicio == 0 &
+    base$SECLSEG == 0 &
+    base$SMSMODCEL1 == 0 &
+    base$SMSMODCEL2 == 0 &
+    base$REQVP == 0 &
+    base$REQVPA == 0 &
+    base$WVP == 0 &
+    base$TOTPEMAIL == 0 ,1,0)
+
+table(base$borrar)
+
+```
+Base with selected variables and transactions with movements
+```{r redundancy21, echo=TRUE}
+base <- base[base$borrar == 0,]
+```
+Clean up (NA´s) and save the dataset
+```{r redundancy22, echo=TRUE}
+base <- na.omit(base)
+
+table(base$class)
+```
+Additional wrangling to include risky web domain (business requirement)
+```{r redundancy23, echo=TRUE}
+base$dominioriesgoso <- ifelse(base$dominio == 'vtr.net' | base$dominio == 'mi.cl',1,0)
+base$dominioriesgoso <- as.factor(base$dominioriesgoso)
+
+table(base$dominioriesgoso)
+
+base$dominio <- NULL
+```
+
+
+## 1.3.2) DATA SET ANALYSIS
+
+#Additional analysis over the new Data set (base)
+
+```{r initial_exploration2, echo=TRUE}
+
+cat("\nBase set dimension :",dim(base))
+cat("\nNumber of unique ages :",base$CUSTOMER_AGE %>% unique() %>% length())
+cat("\nNumber of unique profitability score  :",base$CUST_PROFIT_SCORE %>% unique() %>% length())
+cat("\nNumber of unique service score  :",base$CUST_SERVICE_SCORE %>% unique() %>% length())
+
+```
+#Number of transactions by Age Range 
+```{r initial_exploration3, echo=TRUE}
+base %>%
+  group_by(CUSTOMER_AGE) %>%
+  summarize(count = n()) %>%
+  ggplot(aes(x = CUSTOMER_AGE, y = count)) +
+  geom_line() +
+  ggtitle("Number of transactions by Age Range")
+
+```
+#Histogram of number of transactions for each service score 
+```{r initial_exploration4, echo=TRUE}
+base %>%
+  group_by(CUSTOMER_AGE) %>%
+  summarise(CUST_SERVICE_SCORE=n()) %>%
+  ggplot(aes(CUST_SERVICE_SCORE)) +
+  geom_histogram(color="black", binwidth = 50) +
+  
+  ggtitle("Histogram of number of service score by Customer Age")
+
+```
+#CLASS variable Analysis - Variable used to identify negative == 0 & positive == 1 fraud transactions.
+
+Only 16 transactions with suspicious (fraud) activity
+```{r initial_exploration5, echo=TRUE}
+table(base$class)
+
+```
+
+## 2) METHODS/ANALYSIS 
+## 2.1) DATA WRANGLING
+
+Split for training and test; training with 80% of the initial data set
+```{r wrangling_methods0, echo=TRUE}
+
+set.seed(123)
+v <- c(1:(nrow(base)*1))
+variables <- c(4:ncol(base))
+train_test_split <- initial_split(base[v,variables], prop = 0.80)
+train_test_split
+
+```
+Functions training() and testing() used to create train and test data sets
+```{r wrangling_methods1, echo=TRUE}
+train_tbl <- training(train_test_split)
+test_tbl  <- testing(train_test_split)
+
+nrow(train_tbl)
+nrow(test_tbl)
+```
+Train Data set : 3.716.778 records
+Test Data set  : 929.194 records
+```{r wrangling_methods2, echo=TRUE}
+table(train_tbl$class)
+table(test_tbl$class)
+```
+Suspicious transaction in the train data set : 13
+Suspicious transaction in the test data set  : 3
+-------------------------------------------------
+
+Split for validation Data Set. 50% of the test data set will be used for validation
+```{r wrangling_methods3, echo=TRUE}
+set.seed(123)
+porcvalidac <- nrow(test_tbl) * 0.5
+filasaletorias <- sample(1:nrow(test_tbl),porcvalidac)
+tbl_validacion <- test_tbl[filasaletorias,]
+table(tbl_validacion$class)
+test_tbl <- test_tbl[-filasaletorias,]
+```
+
+Positive transactions (fraud) proportion in Data Sets 
+```{r wrangling_methods4, echo=TRUE}
+table(train_tbl$class)
+table(test_tbl$class)
+table(tbl_validacion$class)
+```
+Suspicious transaction in the train data set       : 13
+Suspicious transaction in the test data set        : 2
+Suspicious transaction in the validation data set  : 1
+
+Based on the fraud proportions, it is clear we have a data sampling issue that needs to be addressed using data balancing techniques
+
+## 2.2) DATA BALANCE
+
+Data balance technique must be applied as the variable used (class) to identify suspicious transactions is not equally distributed. This will create a challenge for the training process as it will be difficult to identify logical rules. 
+
+To train the models we should have 20% on suspicious (positive) and 80% on negative transactions. A new training Data Set will be created.
+
+## 2.2.1) Undersampling - Decrease negative (not suspicious) transactions 
+```{r wrangling_methods5, echo=TRUE}
+set.seed(123456)
+# Positive cases for training 
+qx <- 13
+qxn <- qx * 4
+# Training data set assembly 
+negativos <- train_tbl[train_tbl$class == 0, ]
+tbl_negativos <- negativos[sample(1:nrow(negativos), qxn),]
+tbl_positivos <- train_tbl[train_tbl$class == 1, ]
+
+train_tbl_manual <- rbind(tbl_negativos, tbl_positivos) 
+
+# Checking for the new Training data set
+nrow(train_tbl_manual)
+head(train_tbl_manual)
+table(train_tbl_manual$class)
+```
+Number of negative (not fraud) transactions : 52
+Number of positive (fraud) transactions     : 13
+
+## 2.2.2) Oversampling - Increase positive (suspicious) transactions
+
+```{r wrangling_methods6, echo=TRUE}
+positivos <- train_tbl[train_tbl$class == 1, ]
+
+# Increasing positives
+
+n <- 5
+
+for(i in 1:(n-1)) {
+  
+  positivos <- rbind(positivos, positivos)
+  
+}
+
+negativos <- train_tbl[train_tbl$class == 0, ]
+indnegativos <- sample(1:nrow(negativos), (nrow(positivos)*4))
+tbl_negativos <- negativos[indnegativos,]
+train_tbl_manual <- rbind(tbl_negativos, positivos)
+
+table(train_tbl_manual$class)
+```
+Number of negative (not fraud) transactions : 832
+Number of positive (fraud) transactions     : 208
+--------------------------------------------------
+
+Saving the data sets
+```{r wrangling_methods7, echo=TRUE}
+save(train_tbl_manual,file="train_tbl_manual.RData")
+save(tbl_validacion,file="validacion_tbl.RData")
+save(train_tbl,file="train_tb_completa.RData")
+save(test_tbl,file="test_tb_completa.RData")
+
+# Deleting objects to release memory
+rm(list = ls())
+```
+## 2.3) VARIABLE TREATMENT AND DATA CLEANING
+
+```{r wrangling_methods8, echo=TRUE}
+
+load("train_tbl_manual.RData")
+load("test_tb_completa.RData")
+train_tbl_manual$DELETE <- NULL
+test_tbl$DELETE <- NULL
+```
+Factorizing the class variable (target variable to train the algorithm)
+```{r wrangling_methods9, echo=TRUE}
+train_tbl_manual$class <- as.factor(train_tbl_manual$class)
+test_tbl$class <- as.factor(test_tbl$class)
+```
+Cleaning the training data set
+```{r wrangling_methods10, echo=TRUE}
+p <- as.data.frame(summary(train_tbl_manual))
+p <- na.omit(p) 
+```
+Additional wrangling for special transactions (deprecated transactions based on business definition)
+```{r wrangling_methods11, echo=TRUE}
+p1 <- sqldf("select Var2 as q from p where Freq not like '%1: 0%' group by Var2 having count(Var2) > 1")
+
+```
+Wrangling - Removing blankspaces from the names and adding to the data frame
+```{r wrangling_methods12, echo=TRUE}
+p1$q <- gsub(pattern = "\\s",   
+             replacement = "",
+             x = p1$q)
+
+
+incluir <- p1$q
+
+train_tbl_manual <- train_tbl_manual[,incluir]
+```
+Moving the target/class variable to the end of the table
+```{r wrangling_methods13, echo=TRUE}
+target<- train_tbl_manual$class
+train_tbl_manual$class <- NULL
+target -> train_tbl_manual$class
+```
+Excluding the target variable (class) from the test data set for prediction
+```{r wrangling_methods14, echo=TRUE}
+x<-test_tbl[,-42] 
+```
+Wrangling -excluding NA´s from the train data set
+```{r wrangling_methods15, echo=TRUE}
+train_tbl_manual<- na.omit(train_tbl_manual)
+```
+
+## 2.4) DATA MODELING - MACHINE LEARNING ALGORITHMS
+
+Training with several Machine Learning Models
+
+## 2.4.1) NAIVE BAYES ALGORITHM
+Naive Bayes is a Supervised Machine Learning algorithm based on the Bayes Theorem that is used to solve classification problems by following a probabilistic approach. It is based on the idea that the predictor variables in a Machine Learning model are independent of each other. Meaning that the outcome of a model depends on a set of independent variables that have nothing to do with each other. 
+------------------------------------------------------------------------------------------------------
+
+Build the model
+```{r wrangling_methods16, echo=TRUE}
+modelBayes<-naiveBayes(class~.,data=train_tbl_manual)
+```
+Summarize the model
+```{r wrangling_methods17, echo=TRUE}
+summary(modelBayes)
+```
+Predict using the model
+```{r wrangling_methods18, echo=TRUE}
+test_tbl$pred_Bayes<-predict(modelBayes,x)
+```
+Accuracy of the model
+```{r wrangling_methods19, echo=TRUE}
+mtab1<-table(test_tbl$pred_Bayes,test_tbl$class, dnn = c("prediccion", "real"))
+confusionMatrix(mtab1, positive = '1')
+```
+Saving model´s accuracy 
+```{r wrangling_methods20, echo=TRUE}
+cm1<- confusionMatrix(mtab1, positive = '1')
+overall.accuracy1<-cm1$overall['Accuracy']
+```
+Saving the model
+```{r wrangling_methods21, echo=TRUE}
+save(modelBayes, file = "modelBayes.rda")
+```
+## 2.4.2) RANDOM FOREST ALGORITHM
+Random forest algorithm is a supervised classification and regression algorithm. As the name suggests, this algorithm randomly creates a forest with several trees.
+
+Generally, the more trees in the forest the more robust the forest looks like. Similarly, in the random forest classifier, the higher the number of trees in the forest, greater is the accuracy of the results.
+
+In simple words, Random forest builds multiple decision trees (called the forest) and glues them together to get a more accurate and stable prediction. The forest it builds is a collection of Decision Trees, trained with the bagging method.
+------------------------------------------------------------------------------------------------------
+
+Build the model
+```{r wrangling_methods22, echo=TRUE}
+model15<-randomForest(class ~ ., data=train_tbl_manual[,-1], ntree=600) 
+```
+Summarize the model
+```{r wrangling_methods23, echo=TRUE}
+summary(model15)
+```
+Predict using the model
+```{r wrangling_methods24, echo=TRUE}
+test_tbl$pred_randomforest<-predict(model15,x)
+```
+Accuracy of the model
+```{r wrangling_methods25, echo=TRUE}
+mtab2<-table(test_tbl$pred_randomforest,test_tbl$class, dnn = c("prediction", "real"))
+confusionMatrix(mtab2, positive = '1')
+```
+Saving model´s accuracy 
+```{r wrangling_methods26, echo=TRUE}
+cm2<- confusionMatrix(mtab2, positive = '1')
+overall.accuracy2<-cm2$overall['Accuracy']
+```
+Saving the model
+```{r wrangling_methods27, echo=TRUE}
+save(model15, file = "model15_RF.rda")
+```
+## 2.4.3) KNN ALGORITHM
+KNN which stand for K Nearest Neighbor is a Supervised Machine Learning algorithm that classifies a new data point into the target class, depending on the features of its neighboring data points.
+------------------------------------------------------------------------------------------------------
+
+Build the model
+```{r wrangling_methods28, echo=TRUE}
+model9<-knn3(class ~ .,data=train_tbl_manual,k=14)
+```
+Summarize the model
+```{r wrangling_methods29, echo=TRUE}
+summary(model9)
+```
+Predict using the model
+```{r wrangling_methods30, echo=TRUE}
+test_tbl$pred_knn<-predict(model9,x,type="class")
+```
+Accuracy of the model
+```{r wrangling_methods31, echo=TRUE}
+mtab3<-table(test_tbl$pred_knn,test_tbl$class, dnn = c("prediccion", "real"))
+confusionMatrix(mtab3, positive = '1')
+```
+Saving model´s accuracy 
+```{r wrangling_methods32, echo=TRUE}
+cm3<- confusionMatrix(mtab3, positive = '1')
+overall.accuracy3<-cm3$overall['Accuracy']
+```
+Saving the model
+```{r wrangling_methods33, echo=TRUE}
+save(model9, file = "modeloknn2020.rda")
+```
+## 3) RESULTS
+## 3.1) MACHINE LEARNING MODEL ACCURACY
+The accuracy of a machine learning classification algorithm is one way to measure how often the algorithm classifies a data point correctly. Accuracy is the number of correctly predicted data points out of all the data points. More formally, it is defined as the number of true positives and true negatives divided by the number of true positives, true negatives, false positives, and false negatives. A true positive or true negative is a data point that the algorithm correctly classified as true or false, respectively. A false positive or false negative, on the other hand, is a data point that the algorithm incorrectly classified.
+
+The accuracy will be used as the variable to select the algorithm to be used for validation (and eventually for production purposes)
+
+## 3.2) MACHINE LEARNING MODEL VALIDATION
+
+```{r results_01, echo=TRUE}
+MODEL_EVALUATED<- c("Bayes Model", "RF Model", "KNN Model")
+MODEL_ACCURACY<- c(overall.accuracy1, overall.accuracy2, overall.accuracy3)
+EVALUATION_RESULT<- data.frame(MODEL_EVALUATED, MODEL_ACCURACY)
+EVALUATION_RESULT
+```
+Based on the results processing over training and test data sets, the Random forest Algorithm is providing the best accuracy. The RF algorithm will be used to process against the validation data set.
+
+Naive Bayes could be considered as a second alternative as it´s accuracy is close to the RF.
+
+KNN accuracy is out of the accuracy range we are looking for; further recommendations will be provided in the CONCLUSION section on this report.
+
+
+## 3.3) MACHINE LEARNING - SELECTED MODEL EXECUTION AGAINST VALIDATION DATA SET
+
+Loading validation data set
+```{r results_02, echo=TRUE}
+load("validacion_tbl.RData")
+```
+Checking for fraud (positive == 1) transactions
+```{r results_03, echo=TRUE}
+table(tbl_validacion$class)
+```
+Excluding the target variable (class) from the validation data set for prediction
+```{r results_04, echo=TRUE}
+x_final<-tbl_validacion[,-42]
+```
+Predict using the model
+```{r results_05, echo=TRUE}
+tbl_validacion$pred_randomforest<-predict(model15,x_final)
+```
+Accuracy of the model
+```{r results_06, echo=TRUE}
+mtabfinal<-table(tbl_validacion$pred_randomforest,tbl_validacion$class, dnn = c("prediccion", "real"))
+confusionMatrix(mtabfinal, positive = '1')
+```
+Getting model´s accuracy
+```{r results_07, echo=TRUE}
+cmfinal<- confusionMatrix(mtabfinal, positive = '1')
+overall.accuracyfinal<-cmfinal$overall['Accuracy']
+overall.accuracyfinal
+```
+Plotting the model
+```{r results_08, echo=TRUE}
+plot(model15)
+```
+## 3.3) MACHINE LEARNING EXECUTION - OBSERVATION
+
+After 50 iterations (trees), real vs prediction trend to have the same values.
+Accuracy : 0.9999053
+
+## 4) CONCLUSION
+
+## 4.1) INSIGHTS
+The accuracy obtained with the RF algorithm, will provide efficiencies to the bank /financial institution as they will avoid manual checkings once a complaint with a possible fraud is received. The Bank will save money as suspicious / fraud transactions will be held until further validation it´s done with the customer limiting Bank´s exposure to unnecesary reputation and regulation´s risks.
+
+The Machine Learning platform and the results has proven to be an effective method for (predictive) fraud detection.
+
+## 4.2) RECOMMENDATIONS
+- Increase data set volume for training and test purposes.
+- Include additional techniques to improve training and testing processes (i.e Cross validation)
+
+
+## 4.3) NEXT STEPS
+- Automate the training and model/algorithm selection process, based on its accuracy. (AutoML)
+- Increase data processing capacity using a platform like DATABRICKS.
+- Deploy a real time application using the trained model; the application should be calling a Rest
+  API passing the transaction to validate as a parameter.
+- Further investigation on API´s deployment (Shiny vs Plumber) must be performed.
+
+
+
+
